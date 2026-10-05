@@ -1,0 +1,9 @@
+{
+  "appId": "com.asifmalikmd.portal",
+  "appName": "Asif Malik MD",
+  "webDir": "dist",
+  "server": {
+    "url": "https://app.asifmalikmd.com",
+    "androidScheme": "https"
+  }
+}
