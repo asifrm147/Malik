@@ -39,7 +39,7 @@ export default async function handler(req, res) {
     if (out !== undefined && !res.headersSent) res.status(200).json(out);
   } catch (e) {
     const status = e.status || 500;
-    if (status >= 500) console.error(e);
+    if (status >= 500 && status !== 503) console.error(e); // 503 = booking closed (expected)
     if (!res.headersSent) res.status(status).json({ error: e.message || 'Server error', status });
   }
 }
@@ -55,8 +55,18 @@ async function assertCaseAccess(me, caseRec) {
 const stageIndex = (c) => Math.max(0, STAGES.indexOf(raw(c, F.case.stage) || STAGES[0]));
 const actorName = (me) => me.name || 'User';
 
+// ---------- launch switch (2026-10-07) ----------
+// Payments, ID.me and video are still in test mode, and a test payment is
+// confirmed by a URL flag. Until real credentials are set, booking, new paid
+// case requests, checkout and payment confirmation are refused. Set
+// PORTAL_BOOKING_OPEN=true in Vercel only once Sphere payments are live.
+const bookingOpen = () => process.env.PORTAL_BOOKING_OPEN === 'true';
+const CLOSED_MSG = 'Online booking opens soon. Until then, please email asif.malik@psychiatrygroup.com (no medical details by email).';
+function requireOpen() { if (!bookingOpen()) throw new HttpError(503, CLOSED_MSG); }
+
 // ================= PUBLIC =================
 on('GET', '/config', async () => ({
+  bookingOpen: bookingOpen(), closedMessage: bookingOpen() ? '' : CLOSED_MSG,
   fees: { consult: fee.consult(), ime: +(process.env.IME_FEE || 1300), reviewBase: +(process.env.REVIEW_BASE_FEE || 500), reviewIncludedPages: +(process.env.REVIEW_INCLUDED_PAGES || 500), reviewPerPage: +(process.env.REVIEW_PER_PAGE || 0.75) },
   states: STATES, timeZone: PRACTICE_TZ, slotMinutes: SLOT_MINUTES, holdMinutes: HOLD_MINUTES, minLeadHours: 14,
   testMode: { idme: idme.testMode(), payments: sphere.testMode(), video: daily.testMode(), email: !process.env.RESEND_API_KEY },
@@ -66,6 +76,7 @@ on('GET', '/slots', async () => ({ slots: (await availableSlots()).map(d => d.to
 
 // ================= PATIENT BOOKING =================
 on('POST', '/book/hold', async ({ req, body }) => {
+  requireOpen();
   const me = await requireUser(req);
   const patient = requireRole(me, 'patient');
   const { start, state } = body;
@@ -93,6 +104,7 @@ on('POST', '/book/hold', async ({ req, body }) => {
 
 // Payment return (both real and test mode land here). Payment is confirmed server-side before anything changes.
 on('GET', '/payments/return', async ({ res, query }) => {
+  requireOpen();
   const ref = query.ref || '';
   const { paid, transactionId } = await sphere.confirm(ref, query);
   const back = query.return || '/account';
@@ -120,6 +132,7 @@ on('GET', '/payments/return', async ({ res, query }) => {
 
 // ================= ORGANIZATION REQUESTS =================
 on('POST', '/org/cases', async ({ req, body }) => {
+  requireOpen();
   const me = await requireUser(req);
   const ou = requireRole(me, 'org');
   const orgId = await orgIdOf(ou);
@@ -141,6 +154,7 @@ on('POST', '/org/cases', async ({ req, body }) => {
 });
 
 on('POST', '/cases/:id/checkout', async ({ req, params }) => {
+  requireOpen();
   const me = await requireUser(req);
   const c = await knack.get(O.cases, params.id);
   await assertCaseAccess(me, c);

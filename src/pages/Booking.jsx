@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { getTokens, startLogin, finishLogin } from '../auth.js';
-import { TopBar, ErrorBox } from '../components/shared.jsx';
+import { TopBar, ErrorBox, ComingSoon } from '../components/shared.jsx';
 
 const PT = { timeZone: 'America/Los_Angeles' };
 const dayLabel = (iso) => new Date(iso).toLocaleDateString('en-US', { ...PT, weekday: 'long', month: 'long', day: 'numeric' });
@@ -19,6 +19,7 @@ export function Book() {
     sessionStorage.setItem('booking', JSON.stringify({ start: pick, state }));
     if (getTokens()) nav('/book/confirm'); else startLogin('/book/confirm');
   }
+  if (cfg && !cfg.bookingOpen) return <ComingSoon />;
   return (
     <>
       <TopBar signedIn={!!getTokens()} showLang={false} />

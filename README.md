@@ -32,6 +32,8 @@ A simulated end-to-end test of all of the above passes 31 of 31 checks.
 
 **Before launch:** test payments are confirmed by a URL flag, so payments must be configured with real Sphere credentials before any real patient books.
 
+**Launch switch (2026-10-07):** booking, paid case requests, checkout and payment confirmation are refused, and `/book` and `/login` show "The secure portal opens soon" with Dr. Malik's email, until `PORTAL_BOOKING_OPEN=true` is set in Vercel. Set it only after Sphere payments are live. Dr. Malik can still sign in at `/login?provider=1`.
+
 ## Deploy
 
 1. Push this folder to a new GitHub repo, then import it in Vercel. Name the project `asifmalikmd-portal` so the registered login address works.

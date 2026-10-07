@@ -205,3 +205,24 @@ export function Requests({ onSchedule, onReport, onSubmitInfo }) {
 }
 
 export const scrollTo = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+// Shown while PORTAL_BOOKING_OPEN isn't "true" on the server (2026-10-07).
+export function ComingSoon({ providerLink = false }) {
+  return (
+    <>
+      <TopBar signedIn={false} showLang={false} />
+      <main className="wrap" style={{ maxWidth: 640 }}>
+        <h1>The secure portal opens soon.</h1>
+        <p>Online booking, the case portal for insurers, employers and attorneys, and patient accounts are being finished now.</p>
+        <div className="card">
+          <h2>Book a consultation or send a review request now</h2>
+          <p>Email Dr. Malik, and you’ll get a reply with available Monday times or a quote and next steps.</p>
+          <p><a href="mailto:asif.malik@psychiatrygroup.com?subject=Consultation%20or%20review%20request"><b>asif.malik@psychiatrygroup.com</b></a></p>
+          <p className="small"><b>Please don’t include medical details, records or identification in email.</b> Regular email isn’t secure.</p>
+        </div>
+        <p className="small">Emergencies: call 911. Crisis: call or text 988.</p>
+        {providerLink && <p className="small mt"><a href="/login?provider=1">Provider sign-in</a></p>}
+      </main>
+    </>
+  );
+}
