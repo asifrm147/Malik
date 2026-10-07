@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api, uploadAsset } from '../api.js';
 import { getTokens, startLogin } from '../auth.js';
 import { TopBar, ErrorBox } from '../components/shared.jsx';
+import { PhoneAssistant } from './PhoneAssistant.jsx';
 
 const STAGES = ['Awaiting appointment / review', 'Report in preparation', 'Dictated', 'Proofed and compiled', 'In quality control', 'Ready for download'];
 const d = (iso) => iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
@@ -19,9 +20,10 @@ export function Provider() {
         <div className="row wrapflex" style={{ marginBottom: 12 }}>
           <button className={`btn sm ${tab === 'cases' ? '' : 'sec'}`} onClick={() => setTab('cases')}>Cases</button>
           <button className={`btn sm ${tab === 'orgs' ? '' : 'sec'}`} onClick={() => setTab('orgs')}>Organization users</button>
+          <button className={`btn sm ${tab === 'phone' ? '' : 'sec'}`} onClick={() => setTab('phone')}>Phone assistant</button>
         </div>
         <ErrorBox error={err} />
-        {tab === 'orgs' ? <OrgUsers /> : <>
+        {tab === 'phone' ? <PhoneAssistant /> : tab === 'orgs' ? <OrgUsers /> : <>
           <div className="card tablewrap">
             <h2>Cases</h2>
             {!cases ? <p>Loading…</p> : !cases.length ? <p>No cases yet.</p> :

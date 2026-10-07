@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/voice/:action",
+      "destination": "/api/voice?action=:action"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/[...route]"
     },

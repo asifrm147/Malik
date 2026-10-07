@@ -51,6 +51,30 @@ Registered sign-in return addresses: `https://app.asifmalikmd.com/auth/callback`
 
 A daily job runs at 17:00 UTC (10 AM Pacific in summer, 9 AM in winter). It emails patients whose Booked appointment starts in 12–36 hours, unless they turned reminders off. Each appointment is reminded once. The email says only that an appointment is coming up, with a sign-in link. Set `CRON_SECRET` in Vercel. Vercel sends it automatically.
 
+## Phone assistant (pilot)
+
+Callers to the practice number talk to an automated assistant (Telnyx Call Control). It is **off** until `VOICE_ATTENDANT_ON=true` is set.
+
+- **Patients** calling from the phone number on their account key in their date of birth. They can then hear their next or last appointment and their report's status, and leave a message.
+- **Attorneys, claim managers and other offices** get through only if **both** are true:
+  - their number is in `VOICE_ALLOWED_NUMBERS` (comma-separated)
+  - it is the phone of an organization user you have linked to an organization
+
+  They key in the case number and can reach only their own organization's cases. Add a number only with a signed release on file.
+- **Everyone else** is told to call the office. Nothing is looked up.
+
+The AI (optional Azure OpenAI, otherwise keyword matching) only decides what the caller is asking for. The answers are fixed sentences built from Knack data. Crisis words get the 911/988 message first. A message is saved as a Case Event that clients can't see. If email is set up, you also get an email that says only "New phone message".
+
+**Workspace → Phone assistant** shows the setup checklist and which firms may call. It also has **Try it**, a pretend call (typed or by microphone) that uses real data but saves nothing.
+
+**Setup:**
+
+1. In Telnyx, create a Call Control application with webhook `https://app.asifmalikmd.com/api/voice/telnyx`, and assign the number to it.
+2. Set `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` (required: unsigned events are refused). Optionally set `VOICE_ALERT_EMAIL` and the `AZURE_OPENAI_*` variables.
+3. Set `VOICE_ATTENDANT_ON=true`.
+
+See `.env.example`.
+
 ## Public website (asifmalikmd.com)
 
 `website/index.html` is a single self-contained page. Its buttons send people to `app.asifmalikmd.com/book` and `/login`.
