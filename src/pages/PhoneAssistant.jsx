@@ -15,7 +15,7 @@ export function PhoneAssistant() {
     <>
       <div className="card">
         <h2>Phone assistant <span className="pill cur">Pilot</span></h2>
-        <p className="small">Callers hear that it's an automated assistant and that the call is transcribed, then say what they need. Anyone can hear the office information below and leave a message. Case details need the phone number on file plus the patient's date of birth (or, for an approved firm, the case number) -- and nothing is said that would confirm someone is a patient before that. Crisis words get 911 / 988 and an urgent alert; threats toward someone else are flagged for you at once.</p>
+        <p className="small">Same conversation engine as Lemonade 1.8.6: English or Spanish at any point ("English please", "Español"), scheduling understood, "talk to someone", repeat / start over / help, and it asks a clarifying question instead of giving up. Callers hear that it's an automated assistant and that the call is transcribed, then say what they need. Anyone can hear the office information below and leave a message. Case details need the phone number on file plus the patient's date of birth (or, for an approved firm, the case number) -- and nothing is said that would confirm someone is a patient before that. Crisis words get 911 / 988 and an urgent alert; threats toward someone else are flagged for you at once.</p>
         <ul className="small" style={{ paddingLeft: 18 }}>
           <Ok on={info.enabled}>Answering calls (VOICE_ATTENDANT_ON=true)</Ok>
           <Ok on={info.setup.telnyx}>Telnyx (TELNYX_API_KEY)</Ok>
@@ -33,6 +33,16 @@ export function PhoneAssistant() {
           <li>Fax (VOICE_FAX): {info.info.fax || <i>not set</i>}</li>
           <li>New patients (VOICE_NEW_PATIENTS): {info.info.newPatients || <i>not set</i>}</li>
         </ul>
+        <h3>Outgoing announcement</h3>
+        <p className="small">Played right after the greeting -- e.g. "We're closed today due to inclement weather." Set in Vercel: VOICE_ANNOUNCEMENT, optional VOICE_ANNOUNCEMENT_ES, optional last day VOICE_ANNOUNCEMENT_UNTIL (YYYY-MM-DD).</p>
+        <p className="small">{info.announcement ? <>Callers are hearing: <b>“{info.announcement.en || info.announcement.es}”</b>{info.announcement.until ? ` (through ${info.announcement.until})` : ''}</> : <i>No announcement.</i>}</p>
+        <h3>Automation</h3>
+        <ul className="small" style={{ paddingLeft: 18 }}>
+          <li>Schedule appointments (VOICE_AUTOMATION_SCHEDULE): <b>{info.automation.schedule === 'off' ? 'Off — takes a message' : 'Request — offers real open times; you confirm'}</b></li>
+          <li>Reschedule (VOICE_AUTOMATION_RESCHEDULE): <b>{info.automation.reschedule === 'off' ? 'Off — takes a message' : 'Request — offers real open times; you confirm'}</b></li>
+          <li>Refill requests (VOICE_AUTOMATION_REFILL): <b>{info.automation.refill === 'off' ? 'Off — takes a message' : 'Request — collects the details'}</b></li>
+          <li>Approve medications, give clinical information by phone: <b>NEVER</b> · Crisis: <b>ESCALATE</b> · Office hours for crisis guidance: VOICE_OFFICE_HOURS (default "1-5 8-17", Mon–Fri 8–5 Pacific)</li>
+        </ul>
         <h3>Firms that may call</h3>
         <p className="small">Only linked organization users whose phone number is also listed in VOICE_ALLOWED_NUMBERS (comma-separated, in Vercel). Add a number only with a signed release on file.</p>
         {!info.callers.length ? <p className="small muted">No linked organization users yet.</p> :
@@ -40,7 +50,29 @@ export function PhoneAssistant() {
       </div>
       <Messages />
       <TryIt />
+      <Simulator scenarios={info.scenarios || []} />
     </>
+  );
+}
+
+// 1.8.6: scripted calls against a made-up practice -- no real data, nothing saved.
+function Simulator({ scenarios }) {
+  const [results, setResults] = useState(null); const [busy, setBusy] = useState(false); const [err, setErr] = useState(null); const [open, setOpen] = useState(null);
+  const run = async () => { setBusy(true); setErr(null); try { setResults((await api('/voice/scenarios', { method: 'POST', body: {} })).results); } catch (e) { setErr(e); } setBusy(false); };
+  return (
+    <div className="card">
+      <h2>Simulator</h2>
+      <p className="small">{scenarios.length} scripted calls (new patient, reschedule, cancel, language switch, Spanish caller, refill, attorney, wrong birth date, "talk to someone", crisis…) against a made-up practice. Nothing is saved.</p>
+      <button className="btn" disabled={busy} onClick={run}>{busy ? 'Running…' : 'Run all scenarios'}</button>
+      <ErrorBox error={err} />
+      {results && <p className="small"><b>{results.filter((r) => r.pass).length}/{results.length} passed</b></p>}
+      {results && <ul className="list">{results.map((r) => (
+        <li key={r.id} style={{ display: 'block' }}>
+          <button className="btn sec" onClick={() => setOpen(open === r.id ? null : r.id)}>{r.pass ? '✓' : '✗'} {r.title}</button>
+          {open === r.id && <div className="small" style={{ marginTop: 6 }}>{r.rows.map((row, i) => <p key={i} style={{ margin: '4px 0' }}><b>{row.heard}</b> → {row.reply}{row.intent ? <span className="muted"> · {row.intent} ({row.understoodBy}, {row.lang})</span> : null}{row.pass === false ? <b style={{ color: '#c62828' }}> FAIL: {row.reason}</b> : null}</p>)}</div>}
+        </li>
+      ))}</ul>}
+    </div>
   );
 }
 

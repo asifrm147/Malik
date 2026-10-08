@@ -48,6 +48,33 @@ export const publicInfo = (env = process.env) => ({
 });
 export const transferNumber = (env = process.env) => e164(env.VOICE_TRANSFER_NUMBER);
 
+// 1.8.6 (same engine as Lemonade): an outgoing announcement played after the
+// greeting -- VOICE_ANNOUNCEMENT, optional VOICE_ANNOUNCEMENT_ES, and an
+// optional last day VOICE_ANNOUNCEMENT_UNTIL (YYYY-MM-DD).
+export function announcement(env = process.env, now = new Date()) {
+  const en = String(env.VOICE_ANNOUNCEMENT || '').trim().slice(0, 300);
+  const es = String(env.VOICE_ANNOUNCEMENT_ES || '').trim().slice(0, 300);
+  const until = /^\d{4}-\d{2}-\d{2}$/.test(String(env.VOICE_ANNOUNCEMENT_UNTIL || '')) ? env.VOICE_ANNOUNCEMENT_UNTIL : '';
+  if (!en && !es) return null;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(now);
+  return until && today > until ? null : { en, es, until };
+}
+// What the assistant may do on its own: VOICE_AUTOMATION_SCHEDULE /
+// _RESCHEDULE / _REFILL = "request" (default) or "off".
+export function automation(env = process.env) {
+  const m = (v) => (String(v || '').toLowerCase() === 'off' ? 'off' : 'request');
+  return { schedule: m(env.VOICE_AUTOMATION_SCHEDULE), reschedule: m(env.VOICE_AUTOMATION_RESCHEDULE), cancel: 'request', refill: m(env.VOICE_AUTOMATION_REFILL), officeInfo: 'on' };
+}
+// Office open? VOICE_OFFICE_HOURS like "1-5 8-17" (weekdays Mon=1..Fri=5,
+// 8 AM to 5 PM Pacific). Changes what a caller in crisis is told.
+export function isAfterHours(env = process.env, now = new Date()) {
+  const m = /^(\d)-(\d)\s+(\d{1,2})-(\d{1,2})$/.exec(String(env.VOICE_OFFICE_HOURS || '1-5 8-17').trim()) || [null, '1', '5', '8', '17'];
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short', hour: 'numeric', hour12: false }).formatToParts(now).map((x) => [x.type, x.value]));
+  const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday);
+  const hour = Number(parts.hour) % 24;
+  return dow < Number(m[1]) || dow > Number(m[2]) || hour < Number(m[3]) || hour >= Number(m[4]);
+}
+
 // "10/05/1980" (Knack) vs "10051980" (keypad).
 export function dobMatches(knackDob, digits) {
   const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(knackDob || ''));
@@ -142,7 +169,16 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = pro
     wouldSend,
     publicInfo: publicInfo(env),
     transferNumber: transferNumber(env),
+    announcement: announcement(env),
+    automation: automation(env),
     async ready() { return deps; },
+    async afterHours() { return isAfterHours(env); },
+    // Information safety: someone fishing for patient details by phone.
+    async reportSafety({ state, reason }) {
+      await record(null, PHONE_EVENTS.urgent, `${stamp()} Pacific. Information safety: a caller from ${display(state.f)} -- ${reason} Nothing about any patient was shared. Confirm who they are before discussing anything.`);
+      await alert('Phone assistant: please review a caller (information safety)');
+      return true;
+    },
     enabled: async () => ignoreEnabled || voiceEnabled(),
     async lookupCaller(from) {
       const org = await allowedOrgCallers(from);
@@ -183,10 +219,11 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = pro
       return `${whose} is at the stage: ${stage}.${hold}`;
     },
     classify: (text, state) => classifyWithAzure(text, { kind: state.ok ? (state.k === 'party' ? 'party' : 'patient') : 'unknown', env }),
-    async leaveMessage({ state, target, text, urgent, refill }) {
+    async leaveMessage({ state, target, text, urgent, refill, topic = '' }) {
       const c = await caseFor(state).catch(() => null);
       const from = await callerLabel(state);
-      const kind = refill ? 'Refill request (as the caller described it -- nothing was promised)' : `Message for ${target === 'provider' ? 'Dr. Malik' : 'the office'}`;
+      if ((state.d || []).includes('crisis')) urgent = true;
+      const kind = refill ? 'Refill request (as the caller described it -- nothing was promised)' : `${topic ? `${topic} -- ` : ''}Message for ${target === 'provider' ? 'Dr. Malik' : 'the office'}`;
       const detail = `${stamp()} Pacific, from ${from}, calling from ${display(state.f)}. ${kind}: "${text}"${urgent ? ' -- the caller used crisis words and was told to call 911 or 988.' : ''}${state.ok ? '' : ' Nothing about any patient was shared on this call; check who this is before discussing anything.'}`;
       await record(c?.id || null, urgent ? PHONE_EVENTS.urgent : PHONE_EVENTS.message, detail);
       await alert(urgent ? 'URGENT: new phone message' : 'New phone message');
@@ -200,9 +237,10 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = pro
         location: `The caller (${who}) said they are in immediate danger. Asked where they are, they said: "${text}". They were told to call 911. Call them back now.`,
         threat: `The caller (${who}) said: "${text}" -- the exact statement. A threat toward another person: review now (duty to warn, RCW 71.05.120, is a clinical and legal decision, not the assistant's).`,
       }[kind] || `"${text}"`;
-      await record(c?.id || null, PHONE_EVENTS.urgent, `${stamp()} Pacific. ${T}`);
+      await record(c?.id || null, PHONE_EVENTS.urgent, `${stamp()} Pacific. ${T}${state.ah ? ' (After hours.)' : ''}`);
       await alert(kind === 'threat' ? 'URGENT: a caller made a threat toward another person' : 'URGENT: a caller may be in crisis');
-      return true;
+      // The shared engine says "I've let the crisis staff know" only when this is ok.
+      return { ok: true };
     },
     // Two real open consultation times (Mondays 9-11, booked 14+ hours ahead).
     async offerSlots(state) {
@@ -210,11 +248,12 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = pro
       const slots = (await availableSlots()).filter((d) => d.getTime() - Date.now() > 24 * 3600000).slice(0, 2);
       return { slots: slots.map((d) => ({ label: spokenWhen(d.toISOString()), key: d.toISOString() })) };
     },
-    async requestReschedule({ state, slot }) {
+    async requestReschedule({ state, slot, kind = 'reschedule' }) {
       const c = await caseFor(state).catch(() => null);
       if (!c) return { ok: false };
-      await record(c.id, PHONE_EVENTS.message, `${stamp()} Pacific, by phone (patient verified by date of birth): asked to move their appointment to ${slot.label} (${slot.key}). Nothing has been changed -- move it in the portal and let the patient know.`);
-      await alert('New phone message: reschedule request');
+      const what = kind === 'schedule' ? `asked for a NEW appointment at ${slot.label} (${slot.key}). Nothing has been booked -- book it in the portal` : `asked to move their appointment to ${slot.label} (${slot.key}). Nothing has been changed -- move it in the portal`;
+      await record(c.id, PHONE_EVENTS.message, `${stamp()} Pacific, by phone (patient verified by date of birth): ${what} and let the patient know.`);
+      await alert(kind === 'schedule' ? 'New phone message: appointment request' : 'New phone message: reschedule request');
       return { ok: true };
     },
   };
@@ -222,10 +261,14 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = pro
 }
 
 // One Case Event per finished call, when it was about a verified case.
-export async function logVoiceCall(state, outcome) {
-  if (!state?.ok || !state?.sid) return;
+// 1.8.6: logged once, at hang-up (a transfer is noted in the outcome), with
+// the call's length and language.
+export async function logVoiceCall(state, outcome, { phase = 'hangup' } = {}) {
+  if (phase !== 'hangup' || !state?.ok || !state?.sid) return;
   const c = await caseFor(state).catch(() => null);
-  if (c) await saveEvent(c.id, PHONE_EVENTS.call, `Phone assistant call ${stamp()} Pacific -- ${outcome}.`);
+  const secs = state.t0 ? Math.round((Date.now() - state.t0) / 1000) : null;
+  const extra = [secs != null ? `${secs >= 60 ? `${Math.floor(secs / 60)}m ` : ''}${secs % 60}s` : '', state.lg === 'es' ? 'in Spanish' : ''].filter(Boolean).join(', ');
+  if (c) await saveEvent(c.id, PHONE_EVENTS.call, `Phone assistant call ${stamp()} Pacific${extra ? ` (${extra})` : ''} -- ${outcome}.`);
 }
 
 // Workspace -> Phone assistant -> Phone messages: the last 60 days of phone

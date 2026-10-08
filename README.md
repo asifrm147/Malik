@@ -71,6 +71,9 @@ Callers reach an automated assistant (Telnyx Call Control). It is **off** until 
 - Crisis words: the caller is asked whether they're in immediate danger, and where they are. They're given 911 and 988, and you get an urgent alert.
 - A threat toward another person is flagged for you at once.
 - With `VOICE_TRANSFER_NUMBER` set, callers who ask for a person, and callers in danger, are transferred.
+- Same conversation engine as Lemonade 1.8.6 (`api/_lib/voiceAttendantCore.js` and `voiceTelnyx.js` are shared copies -- keep them identical): switch English/Spanish anywhere, scheduling understood, repeat / start over / help / "talk to someone", a clarifying question instead of giving up, and "I understand, but I can't share that" for clinical questions.
+- Outgoing announcement: `VOICE_ANNOUNCEMENT` (+ `_ES`, `_UNTIL`). Automation: `VOICE_AUTOMATION_SCHEDULE` / `_RESCHEDULE` / `_REFILL` = `request` or `off`. Office hours for after-hours crisis guidance: `VOICE_OFFICE_HOURS` (default `1-5 8-17`).
+- Workspace → Phone assistant → **Simulator** runs 23 scripted calls against a made-up practice (also in `npm test`).
 - After two misunderstandings, it offers a person or takes a message.
 
 **Where messages go:** every message, refill request, reschedule request and urgent call is a Case Event that clients can't see. It goes on the case when the caller was verified, and on no case when they weren't. You see them all in **Workspace → Phone assistant → Phone messages**. If email is set up, you also get an email that says only "New phone message".

@@ -96,7 +96,7 @@ test('unknown numbers: office info and a message, nothing about any patient; off
   const hours = await continueConversation(a.state, { speech: 'what are your hours' }, deps);
   assert.match(hours.say, /Mondays 9 to noon/);
   const ask = await continueConversation(hours.state, { speech: 'when is my appointment' }, deps);
-  assert.match(ask.say, /not able to look anything up/);
+  assert.match(ask.say, /I understand what you're asking for/); // 1.8.6: understood, not authorized
   const yes = await continueConversation(ask.state, { speech: 'yes' }, deps);
   await continueConversation(yes.state, { speech: "This is Jo, call me at 509 555 0123. That's all" }, deps);
   assert.equal(deps.wouldSend[0].kind, 'Phone message (no case)');
@@ -186,4 +186,39 @@ test('simulator needs Dr. Malik signed in', async () => {
   const { req, res } = fakeReqRes({ url: '/api/voice?action=simulate', body: '{"from":"5095550100"}' });
   await handler(req, res);
   assert.equal(res.statusCode, 401);
+});
+
+// ---- 1.8.6: same engine as Lemonade -------------------------------------------------
+test('1.8.6: language switching anywhere, scheduling understood, clarification instead of giving up', async () => {
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
+  let o = await startConversation({ from: '+12065550000' }, deps);
+  assert.match(o.say, /How can I help you\?/);
+  for (const [q, check] of [
+    ['Español', (x) => assert.equal(x.state.lg, 'es')],
+    ['English please.', (x) => { assert.equal(x.state.lg, 'en'); assert.match(x.say, /continue in English/); }],
+    ['What languages do you speak?', (x) => assert.match(x.say, /English and Spanish/)],
+    ['Can you please switch to Punjabi?', (x) => assert.match(x.say, /support English and Spanish/)],
+    ['Can you schedule an appointment?', (x) => assert.equal(x.state.li, 'schedule')],
+  ]) { o = await continueConversation(o.state, { speech: q }, deps); check(o); }
+  const c1 = await continueConversation((await startConversation({ from: '+12065550000' }, deps)).state, { speech: 'purple' }, deps);
+  assert.match(c1.say, /appointment, a medication, or something else/);
+});
+
+test('1.8.6: announcement, automation and office hours come from settings', async () => {
+  const { announcement, automation, isAfterHours } = await import('../api/_lib/voiceMalik.js');
+  assert.equal(announcement({}), null);
+  assert.deepEqual(announcement({ VOICE_ANNOUNCEMENT: 'Closed today for snow.' }), { en: 'Closed today for snow.', es: '', until: '' });
+  assert.equal(announcement({ VOICE_ANNOUNCEMENT: 'x', VOICE_ANNOUNCEMENT_UNTIL: '2000-01-01' }), null);
+  assert.equal(automation({ VOICE_AUTOMATION_REFILL: 'off' }).refill, 'off');
+  assert.equal(isAfterHours({}, new Date('2026-10-07T17:00:00Z')), false, 'Wed 10 AM Pacific');
+  assert.equal(isAfterHours({}, new Date('2026-10-11T18:00:00Z')), true, 'Sunday');
+  const deps = makeMalikDeps({ dryRun: true, ignoreEnabled: true, env: { ...process.env, VOICE_ANNOUNCEMENT: 'Closed today for snow.' } });
+  const g = await startConversation({ from: '+12065550000' }, await deps.ready());
+  assert.match(g.say, /Closed today for snow\./);
+});
+
+test('1.8.6: the Simulator passes against this practice', async () => {
+  const { runAllScenarios } = await import('../api/_lib/voiceScenarios.js');
+  const r = await runAllScenarios(null, 'the office of Dr. Asif Malik');
+  for (const x of r) assert.ok(x.pass, x.title);
 });
