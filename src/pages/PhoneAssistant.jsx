@@ -15,22 +15,50 @@ export function PhoneAssistant() {
     <>
       <div className="card">
         <h2>Phone assistant <span className="pill cur">Pilot</span></h2>
-        <p className="small">Callers can hear their next or last appointment, a report's status, and leave you a message. Patients key in their date of birth. Firms key in the case number and only reach their own organization's cases.</p>
+        <p className="small">Callers hear that it's an automated assistant and that the call is transcribed, then say what they need. Anyone can hear the office information below and leave a message. Case details need the phone number on file plus the patient's date of birth (or, for an approved firm, the case number) -- and nothing is said that would confirm someone is a patient before that. Crisis words get 911 / 988 and an urgent alert; threats toward someone else are flagged for you at once.</p>
         <ul className="small" style={{ paddingLeft: 18 }}>
           <Ok on={info.enabled}>Answering calls (VOICE_ATTENDANT_ON=true)</Ok>
           <Ok on={info.setup.telnyx}>Telnyx (TELNYX_API_KEY)</Ok>
           <Ok on={info.setup.signatures}>Telnyx signature checks (TELNYX_PUBLIC_KEY). Required: real calls are ignored without it.</Ok>
           <Ok on={info.setup.ai}>AI understanding (Azure OpenAI). Without it, keyword matching is used.</Ok>
           <Ok on={info.setup.email}>Email alert for new messages (RESEND_API_KEY and VOICE_ALERT_EMAIL)</Ok>
+          <Ok on={Boolean(info.transferNumber)}>Transfer to a person (VOICE_TRANSFER_NUMBER){info.transferNumber ? `: ${info.transferNumber}` : ': without it, callers leave a message instead'}</Ok>
           <li>In Telnyx, create a Call Control application with webhook <code>{info.setup.webhookUrl}</code>, and assign the practice number to it.</li>
+        </ul>
+        <h3>Office information callers can hear</h3>
+        <p className="small">Set in Vercel. A blank line means the assistant offers to take a message instead.</p>
+        <ul className="small" style={{ paddingLeft: 18 }}>
+          <li>Hours (VOICE_HOURS): {info.info.hours || <i>not set</i>}</li>
+          <li>Address (VOICE_ADDRESS): {info.info.address || <i>not set</i>}</li>
+          <li>Fax (VOICE_FAX): {info.info.fax || <i>not set</i>}</li>
+          <li>New patients (VOICE_NEW_PATIENTS): {info.info.newPatients || <i>not set</i>}</li>
         </ul>
         <h3>Firms that may call</h3>
         <p className="small">Only linked organization users whose phone number is also listed in VOICE_ALLOWED_NUMBERS (comma-separated, in Vercel). Add a number only with a signed release on file.</p>
         {!info.callers.length ? <p className="small muted">No linked organization users yet.</p> :
           <ul className="list">{info.callers.map((c, i) => <li key={i}><span><b>{c.name}</b><small>{c.org} · {c.phone || 'no phone on file'}</small></span>{c.allowed ? <span className="pill done">Allowed</span> : <span className="pill warn">Not allowed</span>}</li>)}</ul>}
       </div>
+      <Messages />
       <TryIt />
     </>
+  );
+}
+
+// Every phone message and urgent call, case or no case (1.8.0).
+function Messages() {
+  const [rows, setRows] = useState(null); const [err, setErr] = useState(null);
+  useEffect(() => { api('/voice/messages').then(r => setRows(r.messages)).catch(setErr); }, []);
+  return (
+    <div className="card">
+      <h2>Phone messages</h2>
+      <p className="small">Last 60 days. Messages from callers who weren't verified aren't linked to a case -- check who it is before discussing anything.</p>
+      <ErrorBox error={err} />
+      {!rows ? <p>Loading…</p> : !rows.length ? <p className="small muted">No phone messages yet.</p> :
+        <ul className="list">{rows.map(m => <li key={m.id} style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+          <span><b>{m.type}</b>{m.caseNumber ? ` · Case ${m.caseNumber}` : ' · no case (not verified)'} <span className="small muted">{m.at ? new Date(m.at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''}</span></span>
+          <small style={{ whiteSpace: 'pre-wrap' }}>{m.detail}</small>
+        </li>)}</ul>}
+    </div>
   );
 }
 
@@ -50,8 +78,10 @@ function TryIt() {
       if (out.say) setLines(l => [...l, { who: 'Assistant', text: out.say }]);
       if (out.wouldSend?.length) setWould(w => [...w, ...out.wouldSend]);
       speak(out.say);
-      setCall(out.action === 'hangup' ? null : out);
+      const over = out.action === 'hangup' || out.action === 'transfer';
+      setCall(over ? null : out);
       if (out.action === 'hangup') setLines(l => [...l, { who: '', text: 'Call ended.' }]);
+      if (out.action === 'transfer') setLines(l => [...l, { who: '', text: `A real call would now be transferred to ${out.to}.` }]);
     } catch (e) { setErr(e); } finally { setBusy(false); }
   };
   const send = (input, said) => call && turn({ token: call.token, input }, said);
@@ -90,7 +120,7 @@ function TryIt() {
           <button className="btn sm sec" onClick={() => { setCall(null); setLines(l => [...l, { who: '', text: 'You hung up.' }]); window.speechSynthesis?.cancel(); }}>Hang up</button>
         </div>
         {!gathering && <div className="row wrapflex" style={{ marginTop: 8 }}>
-          {(call.step === 'message' ? ['#'] : ['1', '2', '3', '4', '5', '9']).map(k => <button key={k} className="btn sm sec" disabled={busy} onClick={() => send({ key: k }, `(pressed ${k})`)}>{k}</button>)}
+          {(call.step === 'message' ? ['#'] : ['1', '2', '3', '4', '5', '6', '9', '0']).map(k => <button key={k} className="btn sm sec" disabled={busy} onClick={() => send({ key: k }, `(pressed ${k})`)}>{k}</button>)}
         </div>}
       </>}
       <ErrorBox error={err} />

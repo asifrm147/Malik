@@ -17,6 +17,7 @@ const LAWYER = { id: 'ou1', field_59_raw: { first: 'Lee', full: 'Lee Pratt' }, f
 const UNLINKED = { id: 'ou2', field_59_raw: { first: 'Sam' }, field_70_raw: { full: '5095550188' }, field_193_raw: [] };
 const CASE = { id: 'case1', field_92_raw: 42, field_94_raw: 'Dictated', field_95_raw: 'No', field_109_raw: 'Bo Smith', field_195_raw: [{ id: 'org1' }] };
 const OTHER_ORG_CASE = { id: 'case2', field_92_raw: 43, field_195_raw: [{ id: 'org9' }] };
+const PATIENT_CASE = { id: 'case3', field_92_raw: 44, field_194_raw: [{ id: 'pat1' }] };
 const future = new Date(Date.now() + 5 * 86400000).toISOString();
 const APPTS = [{ id: 'a1', field_208_raw: future, field_119_raw: 'Booked', field_197_raw: [{ id: 'pat1' }], field_198_raw: [{ id: 'case1' }] }];
 let writes = [];
@@ -30,7 +31,7 @@ function filterRecs(recs, filters) {
     return true;
   }));
 }
-const TABLES = { object_3: [PATIENT], object_5: [LAWYER, UNLINKED], object_7: [CASE, OTHER_ORG_CASE], object_8: APPTS };
+const TABLES = { object_3: [PATIENT], object_5: [LAWYER, UNLINKED], object_7: [CASE, OTHER_ORG_CASE, PATIENT_CASE], object_8: APPTS };
 beforeEach(() => {
   writes = [];
   globalThis.fetch = async (url, opts = {}) => {
@@ -53,34 +54,34 @@ test('firms must be on VOICE_ALLOWED_NUMBERS and linked to an organization', asy
   assert.equal((await allowedOrgCallers('+15095550188')).length, 0, 'unlinked user stays out even when listed');
 });
 
-test('a patient verifies by birth date and hears their next appointment', async () => {
-  const deps = makeMalikDeps({ dryRun: true, ignoreEnabled: true });
+test('a patient asks first, then verifies by birth date, then hears the answer', async () => {
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
   const a = await startConversation({ from: '+15095550100' }, deps);
-  assert.match(a.say, /Hi Ann/);
-  assert.equal(a.action, 'gather');
-  const bad = await continueConversation(a.state, { digits: '01011970' }, deps);
+  assert.match(a.say, /automated assistant/);
+  assert.match(a.say, /transcribed/);
+  assert.doesNotMatch(a.say, /Ann/, 'no name before verification');
+  const ask = await continueConversation(a.state, { speech: 'when is my next appointment' }, deps);
+  assert.equal(ask.action, 'gather');
+  const bad = await continueConversation(ask.state, { digits: '01011970' }, deps);
   assert.equal(bad.state.s, 'verify');
-  const v = await continueConversation(a.state, { digits: '03051980' }, deps);
-  assert.equal(v.state.s, 'menu');
-  const next = await continueConversation(v.state, { key: '1' }, deps);
-  assert.match(next.say, /Your next appointment is .* with Dr\. Malik, by video\./);
+  const v = await continueConversation(ask.state, { digits: '03051980' }, deps);
+  assert.match(v.say, /you're verified\. Your next appointment is .* with Dr\. Malik, by video\./);
 });
 
 test('an allowed firm verifies by case number, only for its own organization', async () => {
   process.env.VOICE_ALLOWED_NUMBERS = '5095550199';
-  const deps = makeMalikDeps({ dryRun: true, ignoreEnabled: true });
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
   const a = await startConversation({ from: '+15095550199' }, deps);
-  assert.match(a.say, /Hello Lee from Pratt Law/);
-  assert.match(a.say, /the case number/);
-  assert.equal(a.digits, 10);
-  const other = await continueConversation(a.state, { digits: '43' }, deps);
+  assert.doesNotMatch(a.say, /Pratt/);
+  const ask = await continueConversation(a.state, { speech: 'what is the status of the report' }, deps);
+  assert.match(ask.say, /the case number/);
+  assert.equal(ask.digits, 10);
+  const other = await continueConversation(ask.state, { digits: '43' }, deps);
   assert.equal(other.state.s, 'verify', "another firm's case is not found");
-  const v = await continueConversation(a.state, { digits: '42' }, deps);
-  assert.match(v.say, /I found Bo's record/);
-  const st = await continueConversation(v.state, { speech: 'what is the status of the report' }, deps);
-  assert.match(st.say, /Case 42 is at the stage: Dictated\./);
-  const ask = await continueConversation(st.state, { key: '3' }, deps);
-  const done = await continueConversation(ask.state, { speech: 'Please send the report. That\'s all' }, deps);
+  const v = await continueConversation(ask.state, { digits: '42' }, deps);
+  assert.match(v.say, /I found Bo's record\. Case 42 is at the stage: Dictated\./);
+  const msg = await continueConversation(v.state, { key: '3' }, deps);
+  const done = await continueConversation(msg.state, { speech: "Please send the report. That's all" }, deps);
   assert.match(done.say, /sent to Dr\. Malik's office/);
   assert.equal(deps.wouldSend[0].kind, 'Case event');
   assert.match(deps.wouldSend[0].detail, /Lee Pratt, Pratt Law \(allowed caller\).*"Please send the report\."/);
@@ -88,12 +89,58 @@ test('an allowed firm verifies by case number, only for its own organization', a
   assert.equal(writes.length, 0, 'dry run writes nothing');
 });
 
-test('unknown numbers get nothing; off means off', async () => {
-  const deps = makeMalikDeps({ dryRun: true, ignoreEnabled: true });
-  assert.equal((await startConversation({ from: '+12065550000' }, deps)).action, 'hangup');
+test('unknown numbers: office info and a message, nothing about any patient; off means off', async () => {
+  process.env.VOICE_HOURS = 'Mondays 9 to noon';
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
+  const a = await startConversation({ from: '+12065550000' }, deps);
+  const hours = await continueConversation(a.state, { speech: 'what are your hours' }, deps);
+  assert.match(hours.say, /Mondays 9 to noon/);
+  const ask = await continueConversation(hours.state, { speech: 'when is my appointment' }, deps);
+  assert.match(ask.say, /not able to look anything up/);
+  const yes = await continueConversation(ask.state, { speech: 'yes' }, deps);
+  await continueConversation(yes.state, { speech: "This is Jo, call me at 509 555 0123. That's all" }, deps);
+  assert.equal(deps.wouldSend[0].kind, 'Phone message (no case)');
+  assert.match(deps.wouldSend[0].detail, /NOT verified/);
   process.env.VOICE_ATTENDANT_ON = '';
-  const off = await startConversation({ from: '+15095550100' }, makeMalikDeps());
-  assert.match(off.say, /not available right now/);
+  const off = await startConversation({ from: '+15095550100' }, await makeMalikDeps().ready());
+  assert.match(off.say, /isn't available right now/);
+});
+
+test('reschedule offers two real Monday times; a crisis gets the danger question', async () => {
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
+  let out = await continueConversation((await startConversation({ from: '+15095550100' }, deps)).state, { speech: 'I need to reschedule' }, deps);
+  out = await continueConversation(out.state, { digits: '03051980' }, deps);
+  assert.match(out.say, /Monday, .* at (9|10|11) AM, or Monday/);
+  out = await continueConversation(out.state, { speech: 'the first one' }, deps);
+  assert.match(out.say, /asked the office to move your appointment/);
+  assert.match(deps.wouldSend.at(-2).detail, /asked to move their appointment/);
+  const c = await continueConversation((await startConversation({ from: '+12065550000' }, deps)).state, { speech: "I don't want to be alive anymore" }, deps);
+  assert.match(c.say, /immediate danger/);
+  assert.equal(deps.wouldSend.at(-2).title, 'Urgent phone call');
+});
+
+test('a phone event falls back to "Status change" while the Knack choice is missing', async () => {
+  const { saveEvent } = await import('../api/_lib/voiceMalik.js');
+  const real = globalThis.fetch;
+  const posts = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    if (opts.method === 'POST') {
+      const body = JSON.parse(opts.body);
+      posts.push(body);
+      if (body.field_171 === 'Phone message') return new Response('{"errors":[{"message":"invalid option"}]}', { status: 400 });
+      return new Response('{"id":"e1"}');
+    }
+    return real(url, opts);
+  };
+  try {
+    await saveEvent(null, 'Phone message', 'hello');
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].field_171, 'Status change');
+  assert.equal(posts[1].field_172, '[Phone message] hello');
+  assert.equal(posts[1].field_204, undefined, 'no case for an unverified caller');
 });
 
 test('helpers', () => {

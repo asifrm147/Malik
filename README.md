@@ -53,27 +53,37 @@ A daily job runs at 17:00 UTC (10 AM Pacific in summer, 9 AM in winter). It emai
 
 ## Phone assistant (pilot)
 
-Callers to the practice number talk to an automated assistant (Telnyx Call Control). It is **off** until `VOICE_ATTENDANT_ON=true` is set.
+Callers reach an automated assistant (Telnyx Call Control). It is **off** until `VOICE_ATTENDANT_ON=true` is set. It works the same way as Lemonade 1.8.0, built to the practice's behavioral-health / L&I directive.
 
-- **Patients** calling from the phone number on their account key in their date of birth. They can then hear their next or last appointment and their report's status, and leave a message.
-- **Attorneys, claim managers and other offices** get through only if **both** are true:
-  - their number is in `VOICE_ALLOWED_NUMBERS` (comma-separated)
-  - it is the phone of an organization user you have linked to an organization
+**How a call goes**
 
-  They key in the case number and can reach only their own organization's cases. Add a number only with a signed release on file.
-- **Everyone else** is told to call the office. Nothing is looked up.
+- The assistant says it's automated and that the call is transcribed. Washington requires that notice for recorded or transmitted calls.
+- It asks what the caller needs before asking who they are.
+- **Anyone** can hear the office information (`VOICE_HOURS`, `VOICE_ADDRESS`, `VOICE_FAX`, `VOICE_NEW_PATIENTS`) and leave a message. Nothing is said that would confirm someone is a patient.
 
-The AI (optional Azure OpenAI, otherwise keyword matching) only decides what the caller is asking for. The answers are fixed sentences built from Knack data. Crisis words get the 911/988 message first. A message is saved as a Case Event that clients can't see. If email is set up, you also get an email that says only "New phone message".
+**Who can hear about a case**
 
-**Workspace → Phone assistant** shows the setup checklist and which firms may call. It also has **Try it**, a pretend call (typed or by microphone) that uses real data but saves nothing.
+- **Patients** calling from the number on their account, after keying in their date of birth. They can then hear their next or last appointment and their report's status, leave a message, request a refill (no promise is made), or ask to reschedule. For a reschedule, the assistant offers two real open Monday times, and the choice goes to Dr. Malik to make the change.
+- **Firms**, only if their number is in `VOICE_ALLOWED_NUMBERS` **and** belongs to an organization user you linked to an organization. They key in the case number and only reach their own organization's cases.
 
-**Setup:**
+**Safety**
+
+- Crisis words: the caller is asked whether they're in immediate danger, and where they are. They're given 911 and 988, and you get an urgent alert.
+- A threat toward another person is flagged for you at once.
+- With `VOICE_TRANSFER_NUMBER` set, callers who ask for a person, and callers in danger, are transferred.
+- After two misunderstandings, it offers a person or takes a message.
+
+**Where messages go:** every message, refill request, reschedule request and urgent call is a Case Event that clients can't see. It goes on the case when the caller was verified, and on no case when they weren't. You see them all in **Workspace → Phone assistant → Phone messages**. If email is set up, you also get an email that says only "New phone message".
+
+**Event types in Knack:** the Case Events "Event Type" choices don't include "Phone message", "Phone call" or "Urgent phone call" yet. Until you add them in Knack (Case Events → Event Type → add the three options), these events are saved as "Status change" with the kind shown in brackets, and they still appear in Phone messages.
+
+**Setup**
 
 1. In Telnyx, create a Call Control application with webhook `https://app.asifmalikmd.com/api/voice/telnyx`, and assign the number to it.
-2. Set `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` (required: unsigned events are refused). Optionally set `VOICE_ALERT_EMAIL` and the `AZURE_OPENAI_*` variables.
+2. Set `TELNYX_API_KEY` and `TELNYX_PUBLIC_KEY` (required: unsigned events are refused). Set any of the optional variables above.
 3. Set `VOICE_ATTENDANT_ON=true`.
 
-See `.env.example`.
+See `.env.example`. **Workspace → Phone assistant** shows the setup checklist, which firms may call, the office information, Phone messages, and **Try it**: a pretend call using real data that saves nothing.
 
 ## Public website (asifmalikmd.com)
 

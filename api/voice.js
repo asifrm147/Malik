@@ -3,13 +3,14 @@
 //   POST /api/voice/telnyx    Telnyx Call Control webhook (incoming calls)
 //   GET  /api/voice/status    Dr. Malik: setup and who may call
 //   POST /api/voice/simulate  Dr. Malik: one turn of a pretend call; saves nothing
+//   GET  /api/voice/messages  Dr. Malik: phone messages, last 60 days (1.8.0)
 // See api/_lib/voiceMalik.js for who may use it and what it writes.
 import { HttpError, knack, O, F, raw, connId } from './_lib/knack.js';
 import { requireUser, requireRole, signState, readState } from './_lib/auth.js';
 import { verifyTelnyxSignature } from './_lib/telnyxSignature.js';
 import { handleTelnyxEvent, makeTelnyxActions } from './_lib/voiceTelnyx.js';
 import { startConversation, continueConversation } from './_lib/voiceAttendantCore.js';
-import { makeMalikDeps, logVoiceCall, voiceEnabled, allowedNumbers } from './_lib/voiceMalik.js';
+import { makeMalikDeps, logVoiceCall, voiceEnabled, allowedNumbers, publicInfo, transferNumber, phoneMessages } from './_lib/voiceMalik.js';
 
 export const config = { api: { bodyParser: false } };
 
@@ -29,7 +30,7 @@ async function telnyx(req, res) {
   let event;
   try { event = JSON.parse(body); } catch { return res.status(200).json({ ignored: 'bad json' }); }
   try {
-    const out = await handleTelnyxEvent(event, { deps: makeMalikDeps(), tx: makeTelnyxActions(), onEnd: logVoiceCall });
+    const out = await handleTelnyxEvent(event, { deps: await makeMalikDeps().ready(), tx: makeTelnyxActions(), onEnd: logVoiceCall });
     return res.status(200).json(out);
   } catch (e) {
     console.error('voice:', event?.data?.event_type || '?', e.message); // never caller details
@@ -51,6 +52,8 @@ async function status(req, res) {
   const base = process.env.APP_BASE_URL || 'https://app.asifmalikmd.com';
   return res.status(200).json({
     enabled: voiceEnabled(),
+    info: publicInfo(),
+    transferNumber: transferNumber(),
     setup: { telnyx: !!process.env.TELNYX_API_KEY, signatures: !!process.env.TELNYX_PUBLIC_KEY, ai: !!(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_DEPLOYMENT && process.env.AZURE_OPENAI_API_KEY), email: !!(process.env.RESEND_API_KEY && (process.env.VOICE_ALERT_EMAIL || process.env.PROVIDER_EMAIL)), webhookUrl: `${base}/api/voice/telnyx` },
     callers,
   });
@@ -60,7 +63,7 @@ async function simulate(req, res) {
   await provider(req);
   let body = {};
   try { body = JSON.parse((await rawBody(req)) || '{}'); } catch { throw new HttpError(400, 'Bad request.'); }
-  const deps = makeMalikDeps({ dryRun: true, ignoreEnabled: true });
+  const deps = await makeMalikDeps({ dryRun: true, ignoreEnabled: true }).ready();
   let out;
   if (!body.token) {
     if (!String(body.from || '').trim()) throw new HttpError(400, 'Enter the phone number to call from.');
@@ -74,7 +77,7 @@ async function simulate(req, res) {
   }
   // The state is signed so the browser can't skip the verification step.
   const state = { ...out.state, a: out.action };
-  return res.status(200).json({ say: out.say, action: out.action, digits: out.digits || 0, step: state.s, token: signState(state, 1800), wouldSend: deps.wouldSend });
+  return res.status(200).json({ say: out.say, action: out.action, digits: out.digits || 0, to: out.to || '', step: state.s, token: signState(state, 1800), wouldSend: deps.wouldSend });
 }
 
 export default async function handler(req, res) {
@@ -83,6 +86,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && action === 'telnyx') return await telnyx(req, res);
     if (req.method === 'GET' && action === 'status') return await status(req, res);
     if (req.method === 'POST' && action === 'simulate') return await simulate(req, res);
+    if (req.method === 'GET' && action === 'messages') { await provider(req); return res.status(200).json({ messages: await phoneMessages() }); }
     throw new HttpError(404, 'Not found');
   } catch (e) {
     const code = e.status || 500;
