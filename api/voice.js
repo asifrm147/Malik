@@ -4,13 +4,16 @@
 //   GET  /api/voice/status    Dr. Malik: setup and who may call
 //   POST /api/voice/simulate  Dr. Malik: one turn of a pretend call; saves nothing
 //   GET  /api/voice/messages  Dr. Malik: phone messages, last 60 days (1.8.0)
+//   POST /api/voice/scenarios Dr. Malik: the Simulator -- scripted calls against
+//                             a made-up practice (1.8.6, shared with Lemonade)
 // See api/_lib/voiceMalik.js for who may use it and what it writes.
 import { HttpError, knack, O, F, raw, connId } from './_lib/knack.js';
 import { requireUser, requireRole, signState, readState } from './_lib/auth.js';
 import { verifyTelnyxSignature } from './_lib/telnyxSignature.js';
 import { handleTelnyxEvent, makeTelnyxActions } from './_lib/voiceTelnyx.js';
 import { startConversation, continueConversation } from './_lib/voiceAttendantCore.js';
-import { makeMalikDeps, logVoiceCall, voiceEnabled, allowedNumbers, publicInfo, transferNumber, phoneMessages } from './_lib/voiceMalik.js';
+import { makeMalikDeps, logVoiceCall, voiceEnabled, allowedNumbers, publicInfo, transferNumber, phoneMessages, announcement, automation, PRACTICE_NAME } from './_lib/voiceMalik.js';
+import { runAllScenarios, SCENARIOS } from './_lib/voiceScenarios.js';
 
 export const config = { api: { bodyParser: false } };
 
@@ -54,6 +57,9 @@ async function status(req, res) {
     enabled: voiceEnabled(),
     info: publicInfo(),
     transferNumber: transferNumber(),
+    announcement: announcement(),
+    automation: automation(),
+    scenarios: SCENARIOS.map((x) => ({ id: x.id, title: x.title })),
     setup: { telnyx: !!process.env.TELNYX_API_KEY, signatures: !!process.env.TELNYX_PUBLIC_KEY, ai: !!(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_DEPLOYMENT && process.env.AZURE_OPENAI_API_KEY), email: !!(process.env.RESEND_API_KEY && (process.env.VOICE_ALERT_EMAIL || process.env.PROVIDER_EMAIL)), webhookUrl: `${base}/api/voice/telnyx` },
     callers,
   });
@@ -86,6 +92,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && action === 'telnyx') return await telnyx(req, res);
     if (req.method === 'GET' && action === 'status') return await status(req, res);
     if (req.method === 'POST' && action === 'simulate') return await simulate(req, res);
+    if (req.method === 'POST' && action === 'scenarios') { await provider(req); return res.status(200).json({ results: await runAllScenarios(null, PRACTICE_NAME) }); }
     if (req.method === 'GET' && action === 'messages') { await provider(req); return res.status(200).json({ messages: await phoneMessages() }); }
     throw new HttpError(404, 'Not found');
   } catch (e) {
