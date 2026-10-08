@@ -1,33 +1,52 @@
 // Phone assistant -- the portal's data for the conversation in
-// voiceAttendantCore.js (pilot, 2026-10-07).
+// voiceAttendantCore.js (pilot 2026-10-07; rebuilt like Lemonade 1.8.0 the
+// same day, to the practice's behavioral-health / L&I directive).
 //
-// Who may use it:
-//   - Patients, calling from the phone number on their account, after keying
+// Who may hear anything about a case:
+//   - Patients calling from the phone number on their account, after keying
 //     in their date of birth.
 //   - Attorneys, claim managers and other offices ONLY when BOTH are true:
 //     their number is on the allowed list (VOICE_ALLOWED_NUMBERS in Vercel,
 //     comma-separated), and it is the phone of an organization user Dr. Malik
 //     has linked to an organization. They key in the case number, and only
 //     their own organization's cases are found.
-//   Anyone else is told to call the office; nothing is looked up.
-// The assistant is off until VOICE_ATTENDANT_ON=true is set in Vercel.
+// Anyone may hear the office information (VOICE_HOURS, VOICE_ADDRESS,
+// VOICE_FAX, VOICE_NEW_PATIENTS) and leave a message; nothing is said that
+// would confirm someone is a patient.
+// The assistant is off until VOICE_ATTENDANT_ON=true. VOICE_TRANSFER_NUMBER
+// (optional) is where "a person" and emergencies are transferred.
 //
-// What it writes: a message is a Case Event (the audit trail, not shown to
-// clients) plus, when email is set up, an email to Dr. Malik that says only
-// that there is a new phone message. Each finished call adds one Case Event.
-import { knack, O, F, STAGES, raw, connId } from './knack.js';
-import { logEvent } from './activity.js';
+// What it writes: every message is a Case Event (the audit trail, never shown
+// to clients) -- on the case when the caller was verified, on no case when
+// not -- and Dr. Malik sees them all under Workspace -> Phone assistant ->
+// Phone messages. With email set up he also gets an email that says only that
+// there is a new phone message.
+import { knack, O, F, STAGES, raw, connId, knackDate } from './knack.js';
 import { classifyWithAzure } from './voiceAttendantCore.js';
+import { availableSlots } from './schedule.js';
 
 export const PRACTICE_NAME = 'the office of Dr. Asif Malik';
 const TZ = 'America/Los_Angeles';
 const ACTOR = 'Phone assistant';
+// Event types for phone activity. Until they are added to the Event Type
+// choices in Knack, events are saved as "Status change" with the kind in the
+// detail (see saveEvent).
+export const PHONE_EVENTS = { message: 'Phone message', call: 'Phone call', urgent: 'Urgent phone call' };
 const ten = (v) => String(v || '').replace(/\D/g, '').slice(-10);
 const phoneOf = (rec, key) => { const r = raw(rec, key); return ten(r?.full || r?.formatted || r?.number || rec?.[key]); };
 const firstName = (rec, key) => { const r = raw(rec, key); return r?.first || String(r?.full || rec?.[key] || '').trim().split(/\s+/)[0] || ''; };
+const display = (n) => { const d = ten(n); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(n || 'an unknown number'); };
+const e164 = (n) => { const d = ten(n); return d.length === 10 ? `+1${d}` : ''; };
 
 export const voiceEnabled = () => process.env.VOICE_ATTENDANT_ON === 'true';
 export const allowedNumbers = () => new Set(String(process.env.VOICE_ALLOWED_NUMBERS || '').split(',').map(ten).filter(n => n.length === 10));
+export const publicInfo = (env = process.env) => ({
+  hours: String(env.VOICE_HOURS || '').slice(0, 200),
+  address: String(env.VOICE_ADDRESS || '').slice(0, 200),
+  fax: String(env.VOICE_FAX || '').slice(0, 40),
+  newPatients: String(env.VOICE_NEW_PATIENTS || '').slice(0, 300),
+});
+export const transferNumber = (env = process.env) => e164(env.VOICE_TRANSFER_NUMBER);
 
 // "10/05/1980" (Knack) vs "10051980" (keypad).
 export function dobMatches(knackDob, digits) {
@@ -66,9 +85,20 @@ async function latestCaseOf(patientId) {
 
 // The case a call is about: the allowed caller's case, or the patient's most recent one.
 async function caseFor(state) {
-  if (!state.sid) return null;
+  if (!state.ok || !state.sid) return null;
   if (state.k === 'party') return knack.get(O.cases, state.sid);
   return latestCaseOf(state.sid);
+}
+
+// A Case Event (caseId may be null for an unverified caller). Falls back to
+// "Status change" while the phone event types aren't Knack choices yet.
+export async function saveEvent(caseId, type, detail) {
+  const body = (t, d) => ({ ...(caseId ? { [F.ev.case]: [{ id: caseId }] } : {}), [F.ev.type]: t, [F.ev.detail]: d, [F.ev.at]: knackDate(new Date()), [F.ev.visible]: 'No', [F.ev.actor]: ACTOR });
+  try {
+    return await knack.create(O.events, body(type, detail));
+  } catch {
+    return knack.create(O.events, body('Status change', `[${type}] ${detail}`));
+  }
 }
 
 async function alertDrMalik(subject) {
@@ -88,17 +118,18 @@ const stamp = () => new Date().toLocaleString('en-US', { timeZone: TZ, month: 's
 
 // dryRun (the workspace simulator): reads real data, writes nothing, and
 // reports what WOULD have been saved in `wouldSend`.
-export function makeMalikDeps({ dryRun = false, ignoreEnabled = false } = {}) {
+export function makeMalikDeps({ dryRun = false, ignoreEnabled = false, env = process.env } = {}) {
   const wouldSend = [];
   const callerLabel = async (state) => {
+    if (!state.ok) return 'a caller who was NOT verified';
     if (state.k !== 'party') return 'the patient (verified by date of birth)';
     const u = state.cid ? await knack.get(O.orgUsers, state.cid).catch(() => null) : null;
     const org = (raw(u, F.orgUser.org) || [])[0]?.identifier || '';
     return `${raw(u, F.orgUser.name)?.full || 'allowed caller'}${org ? `, ${org}` : ''} (allowed caller)`;
   };
   const record = async (caseId, type, detail) => {
-    if (dryRun) { wouldSend.push({ kind: 'Case event', title: type, detail }); return true; }
-    await logEvent(caseId, type, detail, ACTOR, false);
+    if (dryRun) { wouldSend.push({ kind: caseId ? 'Case event' : 'Phone message (no case)', title: type, detail }); return true; }
+    await saveEvent(caseId, type, detail);
     return true;
   };
   const alert = async (subject) => {
@@ -106,9 +137,12 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false } = {}) {
     return alertDrMalik(subject);
   };
 
-  return {
+  const deps = {
     practiceName: PRACTICE_NAME,
     wouldSend,
+    publicInfo: publicInfo(env),
+    transferNumber: transferNumber(env),
+    async ready() { return deps; },
     enabled: async () => ignoreEnabled || voiceEnabled(),
     async lookupCaller(from) {
       const org = await allowedOrgCallers(from);
@@ -148,28 +182,64 @@ export function makeMalikDeps({ dryRun = false, ignoreEnabled = false } = {}) {
       const hold = raw(c, F.case.onHold) === 'Yes' ? ` It is on hold until more information is received: ${raw(c, F.case.holdWhat) || 'details are in the portal'}.` : '';
       return `${whose} is at the stage: ${stage}.${hold}`;
     },
-    classify: (text, state) => classifyWithAzure(text, { kind: state.k === 'party' ? 'party' : 'patient' }),
-    async leaveMessage({ state, target, text, urgent }) {
+    classify: (text, state) => classifyWithAzure(text, { kind: state.ok ? (state.k === 'party' ? 'party' : 'patient') : 'unknown', env }),
+    async leaveMessage({ state, target, text, urgent, refill }) {
       const c = await caseFor(state).catch(() => null);
-      if (!c) return { ok: false };
       const from = await callerLabel(state);
-      const detail = `${stamp()} Pacific, from ${from}, calling from ${state.f}, for ${target === 'provider' ? 'Dr. Malik' : 'the office'}: "${text}"${urgent ? ' -- the caller used crisis words and was told to call 911 or 988.' : ''}`;
-      await record(c.id, urgent ? 'URGENT phone message' : 'Phone message', detail);
+      const kind = refill ? 'Refill request (as the caller described it -- nothing was promised)' : `Message for ${target === 'provider' ? 'Dr. Malik' : 'the office'}`;
+      const detail = `${stamp()} Pacific, from ${from}, calling from ${display(state.f)}. ${kind}: "${text}"${urgent ? ' -- the caller used crisis words and was told to call 911 or 988.' : ''}${state.ok ? '' : ' Nothing about any patient was shared on this call; check who this is before discussing anything.'}`;
+      await record(c?.id || null, urgent ? PHONE_EVENTS.urgent : PHONE_EVENTS.message, detail);
       await alert(urgent ? 'URGENT: new phone message' : 'New phone message');
-      return { ok: true, to: "Dr. Malik's office" };
+      return { ok: true, to: refill ? 'Dr. Malik' : "Dr. Malik's office" };
     },
-    async flagUrgent({ state, text }) {
+    async flagUrgent({ state, text, kind = 'crisis' }) {
       const c = await caseFor(state).catch(() => null);
-      if (c) await record(c.id, 'URGENT phone call', `${stamp()} Pacific. ${await callerLabel(state)} (${state.f}) said: "${text}". Told to call 911 or 988. Please call back now.`);
-      await alert('URGENT: a caller used crisis words on the phone assistant');
+      const who = `${await callerLabel(state)}, ${display(state.f)}`;
+      const T = {
+        crisis: `The caller (${who}) said: "${text}". They were asked whether they are in immediate danger and given 911/988. Please call them back now.`,
+        location: `The caller (${who}) said they are in immediate danger. Asked where they are, they said: "${text}". They were told to call 911. Call them back now.`,
+        threat: `The caller (${who}) said: "${text}" -- the exact statement. A threat toward another person: review now (duty to warn, RCW 71.05.120, is a clinical and legal decision, not the assistant's).`,
+      }[kind] || `"${text}"`;
+      await record(c?.id || null, PHONE_EVENTS.urgent, `${stamp()} Pacific. ${T}`);
+      await alert(kind === 'threat' ? 'URGENT: a caller made a threat toward another person' : 'URGENT: a caller may be in crisis');
       return true;
     },
+    // Two real open consultation times (Mondays 9-11, booked 14+ hours ahead).
+    async offerSlots(state) {
+      if (state.k !== 'patient') return null;
+      const slots = (await availableSlots()).filter((d) => d.getTime() - Date.now() > 24 * 3600000).slice(0, 2);
+      return { slots: slots.map((d) => ({ label: spokenWhen(d.toISOString()), key: d.toISOString() })) };
+    },
+    async requestReschedule({ state, slot }) {
+      const c = await caseFor(state).catch(() => null);
+      if (!c) return { ok: false };
+      await record(c.id, PHONE_EVENTS.message, `${stamp()} Pacific, by phone (patient verified by date of birth): asked to move their appointment to ${slot.label} (${slot.key}). Nothing has been changed -- move it in the portal and let the patient know.`);
+      await alert('New phone message: reschedule request');
+      return { ok: true };
+    },
   };
+  return deps;
 }
 
-// One Case Event per finished call, when we know which case it was about.
+// One Case Event per finished call, when it was about a verified case.
 export async function logVoiceCall(state, outcome) {
-  if (!state?.sid) return;
+  if (!state?.ok || !state?.sid) return;
   const c = await caseFor(state).catch(() => null);
-  if (c) await logEvent(c.id, 'Phone call', `Phone assistant call ${stamp()} Pacific -- ${outcome}.`, ACTOR, false);
+  if (c) await saveEvent(c.id, PHONE_EVENTS.call, `Phone assistant call ${stamp()} Pacific -- ${outcome}.`);
+}
+
+// Workspace -> Phone assistant -> Phone messages: the last 60 days of phone
+// messages and urgent calls, case or no case, newest first.
+export async function phoneMessages() {
+  const since = new Date(Date.now() - 60 * 86400000);
+  const recs = await knack.list(O.events, { filters: { match: 'and', rules: [{ field: F.ev.actor, operator: 'is', value: ACTOR }, { field: F.ev.at, operator: 'is after', value: knackDate(since).date }] }, sortField: F.ev.at, rows: 200 });
+  return recs
+    .filter((e) => raw(e, F.ev.type) !== PHONE_EVENTS.call && !String(raw(e, F.ev.detail) || '').startsWith('[Phone call]'))
+    .map((e) => ({
+      id: e.id,
+      at: raw(e, F.ev.at)?.iso_timestamp || null,
+      type: raw(e, F.ev.type) === 'Status change' ? (/^\[([^\]]+)\]/.exec(raw(e, F.ev.detail) || '')?.[1] || 'Phone message') : raw(e, F.ev.type),
+      detail: String(raw(e, F.ev.detail) || '').replace(/^\[[^\]]+\]\s*/, ''),
+      caseNumber: (raw(e, F.ev.case) || [])[0]?.identifier || null,
+    }));
 }

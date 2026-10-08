@@ -1,5 +1,5 @@
-// Phone assistant on a real phone line through Telnyx Call Control (pilot,
-// 2026-10-07). Shared with Lemonade (src/server-lib/voiceTelnyx.js).
+// Phone assistant on a real phone line through Telnyx Call Control. Shared
+// with Lemonade (src/server-lib/voiceTelnyx.js).
 // Turns Telnyx call events into turns of the conversation in
 // voiceAttendantCore.js and speaks the replies.
 //
@@ -8,7 +8,7 @@
 //   call.gather.ended          -> check the digits
 //   call.transcription (final) -> a spoken request or part of a message
 //   call.dtmf.received         -> a menu key, or # to finish a message
-//   call.speak.ended           -> start listening again, or hang up
+//   call.speak.ended           -> start listening again, transfer, or hang up
 //   call.hangup                -> one line in the call log
 //
 // While the assistant is talking, live transcription is stopped so it
@@ -16,9 +16,12 @@
 // Telnyx client_state (kept small on purpose), so no database or Blob write
 // is needed per turn.
 //
+// No imports: the Malik portal has a copy (api/_lib/voiceTelnyx.js).
 import { startConversation, continueConversation, encodeVoiceState, decodeVoiceState, callOutcome } from "./voiceAttendantCore.js";
 
 const TELNYX = "https://api.telnyx.com/v2";
+// The conversation states that take speech or menu keys (1.8.0).
+const LISTENING = new Set(["menu", "message", "resched", "crisis_q", "crisis_loc", "crisis_offer"]);
 
 export function makeTelnyxActions({ apiKey = process.env.TELNYX_API_KEY, fetchImpl = fetch, voice, language = "en-US" } = {}) {
   const ttsVoice = voice || process.env.VOICE_ATTENDANT_TTS_VOICE || "female";
@@ -50,12 +53,14 @@ export function makeTelnyxActions({ apiKey = process.env.TELNYX_API_KEY, fetchIm
     listen: (id, state) => action(id, "transcription_start", { language: "en", transcription_engine: "B", interim_results: false, client_state: encodeVoiceState(state) }),
     stopListening: (id) => quiet(action(id, "transcription_stop", {})),
     saveState: (id, state) => quiet(action(id, "client_state_update", { client_state: encodeVoiceState(state) })),
+    // 1.8.0: hand the caller to a person (the office / on-call line).
+    transfer: (id, to) => action(id, "transfer", { to }),
   };
 }
 
 // Carry out one reply from the conversation.
 export async function perform(tx, callId, out) {
-  const state = { ...out.state, a: out.action };
+  const state = { ...out.state, a: out.action, ...(out.action === "transfer" ? { tt: out.to } : {}) };
   if (out.action === "gather") {
     await tx.stopListening(callId);
     return tx.gather(callId, out.say, out.digits || 8, state);
@@ -80,7 +85,7 @@ export async function handleTelnyxEvent(body, { deps, tx, onEnd }) {
 
   if (type === "call.initiated") {
     if (p.direction !== "incoming") return { ignored: "outgoing" };
-    await tx.answer(callId, { v: 1, s: "new", f: String(p.from || ""), d: [] });
+    await tx.answer(callId, { v: 2, s: "new", f: String(p.from || ""), d: [] });
     return { ok: "answered" };
   }
   if (!state) return { ignored: "not a phone-assistant call" };
@@ -98,21 +103,23 @@ export async function handleTelnyxEvent(body, { deps, tx, onEnd }) {
   }
   if (type === "call.speak.ended") {
     if (state.a === "hangup") await tx.hangup(callId);
-    else if (state.a === "listen") await tx.listen(callId, state);
+    else if (state.a === "transfer" && state.tt) {
+      try { await tx.transfer(callId, state.tt); } catch { await tx.hangup(callId); }
+    } else if (state.a === "listen") await tx.listen(callId, state);
     return { ok: "spoke" };
   }
   if (type === "call.transcription") {
     const t = p.transcription_data || {};
     const text = String(t.transcript || "").trim();
     if (t.is_final === false || !text) return { ignored: "partial" };
-    if (state.s !== "menu" && state.s !== "message") return { ignored: "not listening" };
+    if (!LISTENING.has(state.s)) return { ignored: "not listening" };
     if (state.a !== "listen") return { ignored: "talking" };
     const out = await continueConversation(state, { speech: text }, deps);
     await perform(tx, callId, out);
     return { ok: "heard" };
   }
   if (type === "call.dtmf.received") {
-    if (state.s !== "menu" && state.s !== "message") return { ignored: "not a menu key" };
+    if (!LISTENING.has(state.s)) return { ignored: "not a menu key" };
     const out = await continueConversation(state, { key: String(p.digit || "") }, deps);
     await perform(tx, callId, out);
     return { ok: "key" };
